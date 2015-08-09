@@ -1,0 +1,25 @@
+{
+  "name": "syntro",
+  "version": "1.0.5",
+  "description": "",
+  "author": "syntro",
+  "authorEmail": "info@syntro.io",
+  "commands": [{
+    "name": "Export as Artboards",
+    "identifier": "export",
+    "shortcut": "command shift m",
+    "script": "zip.cocoascript"
+  }, {
+    "name": "Get New Version",
+    "identifier": "checkupdate",
+    "shortcut": "",
+    "script": "checkupdate.cocoascript"
+  }],
+  "menu": {
+    "items": [
+      "export",
+      "checkupdate"
+    ]
+  },
+  "identifier": "com.syntro.cosa.98908c77-3d38-48fa-8c7c-1bb465f67eb8",
+}

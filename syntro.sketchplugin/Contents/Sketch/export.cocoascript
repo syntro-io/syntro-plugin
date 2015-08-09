@@ -1,0 +1,543 @@
+@import "util.cocoascript";
+
+// Context
+var ctx  = null;
+// Document object
+var doc  = null;
+//many languages
+var I18N = util.I18N;
+
+var Marketch = function() {
+  // Layer zindex property
+  this.zIndex       = 1;
+  // We need to deal with all Artboard
+  this.allArtboards = NSMutableArray.array();
+  // Current index Artboard
+  this.index        = 0;
+  // Total number Artboard
+  this.maxIndex     = 0;
+  // Whether RBI
+  this.hasLog       = false;
+  // Queue (for handling layers)
+  this.queue        = {
+      // Currently being traversed queue
+      current: [],
+      // Group traverse the newly created process
+      next: []
+    }
+    // Plugins directory
+  this.pluginPath = [NSString stringWithFormat:@"%@", ctx.scriptPath.replace(/\/(\w*)\.cocoascript$/, '')];
+  // Export Path
+  this.exportPath = '';
+  //file path
+  this.tmpPath    = {};
+  // All Artboard sketch layer data within a Current file
+  this.sketchData = {
+    // Whether to export each sublayer
+    exportEveryLayer: false,
+    sketchName: '',
+    language: I18N.language,
+    I18N: I18N['MarketchPreview'],
+    pageOrder: [],
+    pageData: {
+      /*pageId: {
+      id: '',
+      name: '',
+      // ...
+      artboardId: []
+      },
+      // Within the drawing board all masks
+      mask: {
+        maskLayerId: [maskChildLayerId]
+      }
+    }*/
+    },
+    // Artboard data
+    artboard: {}
+  };
+  // Saving the merged thumbnail output layer parent node id
+  this.groupExportLayers        = [];
+  this.currentMaskLayerId       = null;
+  this.currentMaskParentLayerId = null;
+  this.artboardZIndex           = 0;
+}
+
+Marketch.prototype = {
+  /**
+  * @param expConfig.layer {boolean} whether to export the layer as a picture
+  * @param expConfig.artboard {string} Artboard export options: selected | page | all
+  * @param expConfig.saveSource {boolean} whether to save sketch source file
+  * @return
+  */
+
+  run: function(expConfig) {
+
+    var basePath = '';
+    var loopVar  = null;
+    var loopObj  = null;
+
+    // Initialize the temporary directory path
+    this.initTmpPath();
+    // Temporary file with directory
+    basePath = this.tmpPath.basePath;
+    // Preview whether to export the layers need to decide whether to display the picture options Export button
+    this.sketchData.exportEveryLayer = expConfig.layer;
+
+    // Export selected Artboard
+    if (expConfig.artboard == 'selected') {
+      loopObj = ctx.selection.objectEnumerator();
+
+      while (loopVar = loopObj.nextObject()) {
+        if (loopVar.className() == 'MSArtboardGroup') {
+          this.allArtboards.addObject(loopVar);
+        }
+      }
+    }
+
+    // Export all Artboard current page
+    if (expConfig.artboard == 'page') {
+      this.allArtboards.addObjectsFromArray(doc.currentPage().artboards());
+    }
+
+    // Export all Artboard
+    if (expConfig.artboard == 'all') {
+      loopObj = doc.pages().objectEnumerator();
+
+      while (loopVar = loopObj.nextObject()) {
+
+        // Not exported a single "-" at the beginning of the page and drawing board
+        if (!/^-{1}[^-]*$/.test(loopVar.name())) {
+          var artloops = loopVar.artboards().objectEnumerator();
+
+          while (artboard = artloops.nextObject()) {
+            if(!/^-{1}[^-]*$/.test(artboard.name())){
+              this.allArtboards.addObject(artboard);
+            }
+          }
+        }
+      }
+    }
+
+    // Artboard does not exist
+    if (this.allArtboards.count() == 0) {
+      util.showTips({content:I18N.NOARTBOARD});
+      return false;
+    }
+
+    // Copy the current sketch file to a temporary directory
+    expConfig.saveSource && this.copySkethFile();
+
+    // Process Artboard
+    this.collectArtboard();
+
+    return this;
+  },
+
+  // Initialize the temporary directory path
+  initTmpPath: function() {
+
+    // Temporary directory
+    var tmpPath        = NSTemporaryDirectory();
+    var basePath       = [tmpPath stringByAppendingPathComponent: @"com.sketch.cosa"];
+    var tmpFolder      = new Date().getTime().toString();
+    var artboardFolder = [NSString stringWithFormat: @"%@/%@", basePath, tmpFolder];
+    var imagePath      = '';
+    var dataPath       = '';
+
+    // Delete the home directory (if it exists)
+    var result = [[NSFileManager alloc] removeItemAtPath:basePath error:nil];
+    // Re-create the master directory
+    [[NSFileManager alloc] createDirectoryAtPath:basePath withIntermediateDirectories:nil attributes:nil error:nil];
+    // Re-create the drawing board folder
+    [[NSFileManager alloc] createDirectoryAtPath:artboardFolder withIntermediateDirectories:nil attributes:nil error:nil];
+
+    // Data File Path
+    dataPath = [artboardFolder stringByAppendingPathComponent: @"data.js"];
+    htmlPath = [artboardFolder stringByAppendingPathComponent: @"index.html"];
+
+    this.tmpPath.zipPath  = basePath;
+    this.tmpPath.basePath = artboardFolder;
+    this.tmpPath.dataPath = dataPath;
+    this.tmpPath.htmlPath = htmlPath;
+
+  },
+
+  // Copy the current sketch file
+  copySkethFile: function() {
+    var basePath       = this.tmpPath.basePath;
+    var sketchName     = util.toJSString(doc.displayName());
+    var savePath       = ''; // Sketch source file is saved in the temporary directory path
+    var sketchFilePath = doc.fileURL();
+
+
+    if (!(/\.sketch$/.test(sketchName))) {
+      sketchName += '.sketch';
+    }
+
+    savePath = basePath +'/'+ sketchName;
+
+    // If the file is not saved sketchFilePath sketch will return null sketch does not need to copy the source files
+    if (sketchFilePath) {
+      this.sketchData.sketchName = sketchName;
+      sketchFilePath = sketchFilePath.path();
+      [[NSFileManager defaultManager] copyPath:sketchFilePath toPath:savePath handler:nil];
+    }
+  },
+
+  // Iterative process Artboard
+  collectArtboard: function() {
+
+    //sketch all file data
+    var sketchData   = this.sketchData;
+
+    //current page id
+    var activePageId = util.toJSString(doc.currentPage().objectID());
+    var theArtboard;
+    var loopArtboard = this.allArtboards.objectEnumerator();
+
+    // Traverse all Artboard
+    while (theArtboard = loopArtboard.nextObject()) {
+      var artboardData      = {};
+      var artboardId        = util.toJSString(theArtboard.objectID());
+      var theArtPage        = theArtboard.parentGroup();
+      var theArtPageId      = util.toJSString(theArtPage.objectID());
+      var artboardPath      = NSString.stringWithFormat(@"%@/%@", this.tmpPath.basePath, artboardId);
+      var artboardSlicePath = artboardPath.stringByAppendingPathComponent('slice');
+
+      // Where the page to be processed when the drawing board instead of the current page where the activation page Artboard
+      if (activePageId != theArtPageId) {
+        activePageId = theArtPageId;
+        doc.setCurrentPage(theArtboard.parentGroup());
+      }
+
+      // Page information
+      if (!sketchData.pageData[theArtPageId]) {
+        // No matter how the user selects the data to be exported page
+        sketchData.pageData[theArtPageId] = {
+          // Page unique id
+          pageId: theArtPageId,
+          // Page name
+          name: util.toJSString(theArtPage.name(), {encode: true, escapeLine:true}),
+          //Page id in Sketchpad file
+          artboardId: []
+        }
+        // Save the drawing board order
+        sketchData.pageOrder.push(theArtPageId);
+      }
+
+      // Save Artboard id
+      sketchData.pageData[theArtPageId].artboardId.push(artboardId);
+
+      // Create Artboard Folder
+      [[NSFileManager defaultManager] createDirectoryAtPath:artboardPath withIntermediateDirectories:nil attributes:nil error:nil];
+      // Create a slice layer folder in the directory Artboard
+      [[NSFileManager alloc] createDirectoryAtPath:artboardSlicePath withIntermediateDirectories:nil attributes:nil error:nil];
+
+      //Export Sketch as images
+      this.exportLayerAsImage(theArtboard, {name: 'artboard', path: artboardPath});
+
+      // Reset zindex
+      this.artboardZIndex = 0;
+
+      // Artboard && processing layer data
+      sketchData.artboard[artboardId] = this.getArtboardData({
+        artboard: theArtboard,
+        artboardPath: artboardPath
+      });
+    }
+
+    // TODO handle masks
+    this.saveDataFile();
+    this.copyHtmlFile();
+  },
+
+  /**
+  * Artboard && layer data processing
+  * @param obj.artboard Artboard
+  * @return obj.artboardPath Artboard save path
+   */
+    getArtboardData: function(obj) {
+    var artboard           = obj.artboard;
+    var exportLayerAsImage = this.sketchData.exportEveryLayer;
+    var theLayer           = null;
+    var loopLayer          = artboard.children().objectEnumerator(); //child Layer
+    var artboardData       = util.getLayerData(artboard, {type: 'artboard', zIndex: this.artboardZIndex});
+
+    //Export Options
+    var exportConfig       = {
+      // Export file name (without extension)
+      name: '',
+      // Export Path
+      path: obj.artboardPath
+    }
+
+    // Artboard under sections
+    artboardData.slice = [];
+    artboardData.layer = [];
+    artboardData.mask  = {};
+
+    while(theLayer = loopLayer.nextObject()) {
+
+      var layerSize     = theLayer.frameInArtboard().size;
+      var layerId       = util.toJSString(theLayer.objectID());
+      var parentGroupId = util.toJSString(theLayer.parentGroup().objectID());
+      var layerName     = util.toJSString(theLayer.name());
+      var layerType     = util.toJSString(theLayer.className());
+      var layerData     = [];
+
+      var layerStates   = this.isLayerEnable(theLayer);
+
+      exportConfig.name = layerId;
+
+      // Invisible layers
+      if (!layerStates.isVisible) {
+        continue;
+      }
+
+      // Group layers
+      if (layerStates.hasExportByGroup) {
+        continue;
+      }
+
+      if (layerStates.isMaskChildLayer && this.currentMaskLayerId) {
+        artboardData.mask[this.currentMaskLayerId].push(layerId);
+      } else {
+
+        // Clear the current mask mark
+        this.currentMaskLayerId       = null;
+        this.currentMaskParentLayerId = null;
+      }
+
+      /*
+      * Children method to flatten all the layers(no hierarchical relationship) under Artboard
+      * If a layer is a mask layer, the same folder, all the layers appear
+      for subsequent sub - layer masks within
+      * Traverse to the next layer, the need to progressively determine whether a parent layer appeared recently mask layer(if any) have a common "ancestor"
+      * The existence of a common ancestor, always only the current layer and the intersection portion of the mask layer in export layers as a picture.
+      * The common ancestor is not present, that the first occurrence of the recent failure of masks scope and empty once appeared recently mask layer objects.
+       */
+
+      // When a layer mask, masks record current information
+      if (theLayer.hasClippingMask()) {
+
+        // Save the current mask layer information
+        this.currentMaskLayerId       = layerId;
+        this.currentMaskParentLayerId = parentGroupId;
+
+        // Save Artboard Inner Edition data
+        artboardData.mask[layerId]    = [];
+      }
+
+      // Exported as a picture less than 64 * 64 and the current layer parent node does not contain the text layer in the region
+      if (this.groupExportEnable(theLayer)) {
+        this.groupExportLayers.push(parentGroupId);
+
+        // Saving layer data
+        layerData = util.getLayerData(theLayer.parentGroup(), {type: 'bitmap', zIndex: this.artboardZIndex});
+        artboardData.layer.push(layerData);
+
+        // Export parent layer
+        exportConfig.name = util.toJSString(theLayer.parentGroup().objectID());
+        exportLayerAsImage && this.exportLayerAsImage(theLayer.parentGroup(), exportConfig);
+
+      } else {
+        switch(layerType) {
+          case 'MSTextLayer':
+
+            // Saving text layer data
+            layerData = util.getLayerData(theLayer, {type: 'text', zIndex: this.artboardZIndex});
+            artboardData.layer.push(layerData);
+            break;
+
+          case 'MSSliceLayer':
+
+            // Saving slice layer data
+            layerData = util.getLayerData(theLayer, {type: 'slice', zIndex: this.artboardZIndex});
+            artboardData.slice.push(layerData);
+
+            // Export Slices
+            exportLayerAsImage && this.exportLayerAsImage(theLayer, {
+              name: layerName,
+              path: obj.artboardPath +'/slice'
+            });
+            break;
+
+          case 'MSBitmapLayer':
+
+            // Save the bitmap data
+            layerData = util.getLayerData(theLayer, {type: 'bitmap', zIndex: this.artboardZIndex});
+            artboardData.layer.push(layerData);
+
+            // Export Bitmap
+            exportLayerAsImage && this.exportLayerAsImage(theLayer, exportConfig);
+            break;
+
+          case 'MSShapeGroup':
+
+            // Save shape data
+            layerData = util.getLayerData(theLayer, {type: 'shape', zIndex: this.artboardZIndex});
+            artboardData.layer.push(layerData);
+
+            // Export shape group of pictures
+            exportLayerAsImage && this.exportLayerAsImage(theLayer, exportConfig);
+            break;
+        }
+      }
+
+      // Increment zindex
+      this.artboardZIndex++;
+    }
+
+    return artboardData;
+  },
+
+  /**
+  * Export layers as a group
+  * if >= 64 x 64, and does not contain a text layer
+  */
+
+  groupExportEnable: function(layer) {
+    var frame       = layer.frameInArtboard().size;
+    var parentLayer = layer.parentGroup();
+    //search condition
+    var predicate = NSPredicate.predicateWithFormat('className == "MSTextLayer"');
+    // Set the current layer
+    var textLayers = parentLayer.children().filteredArrayUsingPredicate(predicate);
+
+    // Layer size is less than 64 * 64 and do not contain text layers
+    if (frame.width <= 64 && frame.height <= 64 && textLayers.count() == 0) {
+      return true;
+    }
+
+    return false;
+  },
+
+  /**
+  * Layers is available, the following types of layers unavailable:
+  * 1. Non - visible layers, basic graphic sprites(eg: MSRectangleShape, MSShapePathLayer)
+  * 2. The picture's layer set has been exported as a picture of the (64 * 64 within the layer set will be derived by the group)
+  */
+
+  isLayerEnable: function(layer) {
+    var isVisible        = true;
+    var hasExportByGroup = false;
+    var layerClass       = (layer.class()).toString().toLowerCase();
+    var isMaskChildLayer = false;
+
+    // Graphics class names include shape, but time does not include the group keyword indicates that this is a basic graphics, should export the parent layer
+    if (layerClass.indexOf('shape') > -1 && layerClass.indexOf('group') == -1) {
+
+      // Pretend invisible to ignore
+      isVisible = false;
+      // return false;
+    }
+
+    // Layer without exporting
+    if (layerClass == 'mslayergroup' || layerClass == 'msartboardgroup') {
+
+      // Pretend invisible to ignore
+      isVisible = false;
+      // return false;
+    }
+
+    // Traverse up
+    while (layer.class() != 'MSArtboardGroup') {
+      var theLayerId = util.toJSString(layer.objectID());
+
+      // Parent group invisible
+      if (!layer.isVisible()) {
+        isVisible = false;
+      }
+      // The layer where the parent has been exported as a picture of the
+      if (this.groupExportLayers.indexOf(theLayerId) != -1) {
+        hasExportByGroup = true;
+      }
+
+      // Determine Layer Mask
+      if (theLayerId == this.currentMaskParentLayerId) {
+        isMaskChildLayer = true;
+      }
+
+      layer = layer.parentGroup();
+    }
+
+    return {
+      isVisible: isVisible,
+      hasExportByGroup: hasExportByGroup,
+      isMaskChildLayer: isMaskChildLayer
+    }
+  },
+
+  /**
+  * Export layer as a picture
+  * Layer need to export layers
+  * Options.name export file name
+  * Options.path Export Path
+  */
+
+  exportLayerAsImage: function(layer, options) {
+    var slice;
+    var sliceRect = null;
+
+    /**
+    * AbsoluteInfluenceRect Although the return value of the data type CGRect
+    * However, in some cases to get the coordinates of the actual size of the error has 1 px
+    */
+
+    var absoluteRect = layer.absoluteRect();
+
+    // Export Configuration
+    var exportConfig = {
+      name: options.path +'/'+ options.name +'@2x.png',
+      format: 'png'
+    };
+
+    sliceRect    = NSMakeRect(absoluteRect.x(), absoluteRect.y(), absoluteRect.width(), absoluteRect.height());
+    slice        = [[MSSliceMaker slicesFromExportableLayer:layer inRect:sliceRect] firstObject];
+    slice.page   = doc.currentPage().copyLightweight();
+    slice.format = exportConfig.format;
+
+    if (options.name == 'artboard') {
+
+      // Artboard export Press 1x
+      slice.scale = 1;
+      exportConfig.name = options.path +'/'+ options.name +'.png',
+
+      [[MSSliceExporter dataForRequest: slice] writeToFile:exportConfig.name atomically:true];
+
+    } else {
+
+      // Export 2x Figure
+      slice.scale = 2;
+
+      [[MSSliceExporter dataForRequest: slice] writeToFile:exportConfig.name atomically:true];
+
+      // Figure exported 1x
+      slice.scale       = 1;
+      exportConfig.name = exportConfig.name.replace('@2x.png', '@1x.png');
+
+      [[MSSliceExporter dataForRequest: slice] writeToFile:exportConfig.name atomically:true];
+    }
+  },
+
+  // Save data files
+  saveDataFile: function() {
+
+    var jsonData = 'var pageData = '+ JSON.stringify(this.sketchData);
+    var content  = [NSString stringWithCString:jsonData encoding:NSUTF8StringEncoding];
+    var dataPath = this.tmpPath.dataPath;
+
+    [content writeToFile:dataPath atomically:1 encoding:NSUTF8StringEncoding error:nil];
+  },
+
+  // Save html file
+  copyHtmlFile: function() {
+
+    var basePath     = this.tmpPath.basePath;
+    var pluginPath   = this.pluginPath;
+    var saveHtmlPath = [basePath stringByAppendingPathComponent: @'index.html'];
+    var sourcePath   = [pluginPath stringByAppendingPathComponent: @'index.html'];
+
+    [[NSFileManager defaultManager] copyPath:sourcePath toPath:saveHtmlPath handler:nil];
+  }
+}

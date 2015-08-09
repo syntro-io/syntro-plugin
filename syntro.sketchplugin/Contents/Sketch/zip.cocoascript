@@ -1,0 +1,130 @@
+@import "export.cocoascript";
+
+// Exported as zip bag
+var ExportAsZip = function() {};
+ExportAsZip.prototype = {
+  setup: function() {
+    // Export options
+    var expConfig    = this.getExportConfig();
+    var exportPath   = null;
+    var artboardType = null;
+    var marketch     = null;
+    var zipResult    = null;
+
+    // Point OK
+    if (expConfig.button == 1000) {
+      switch (expConfig.artboard) {
+        default:
+          case 0:
+          artboardType = 'selected';
+        break;
+        case 1:
+            artboardType = 'page';
+          break;
+        case 2:
+            artboardType = 'all';
+          break;
+      }
+
+      // Get the save path
+      exportPath = this.getSavePath();
+
+      if (exportPath) {
+        marketch = new Marketch().run({
+          layer: expConfig.layer,
+          artboard: artboardType,
+          saveSource: true
+        });
+
+        zipResult = util.zipFile(marketch.tmpPath.basePath, exportPath);
+
+        if (zipResult) {
+
+          // Task successfully executed
+          doc.showMessage(I18N.EXPORTSUCCESS);
+
+          if (expConfig.reveal) {
+            var zipURL = [NSURL fileURLWithPath:exportPath];
+            var fileURLs = [NSArray arrayWithObjects:zipURL, nil];
+            [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:fileURLs];
+          }
+        } else {
+          doc.showMessage(I18N.EXPORTFAIL);
+        }
+      }
+    }
+  },
+
+  // Get the export options
+  getExportConfig: function() {
+    var altWin    = COSAlertWindow.new();
+    var items     = [I18N.SELECTEDARTBOARD, I18N.ARTBOARDONPAGE, I18N.ALLARTBOARD];
+    var comboBox  = NSComboBox.alloc().initWithFrame(NSMakeRect(0, 0, 200, 25));
+    var exportBox = NSButton.alloc().initWithFrame(NSMakeRect(0, 0, 250, 25));
+    var revealBox = NSButton.alloc().initWithFrame(NSMakeRect(0, 0, 250, 25));
+
+    altWin.setMessageText('Syntro');
+    altWin.setInformativeText(I18N.SELECTEXPORTARTBOARD);
+    altWin.addButtonWithTitle(I18N.CONFIRM);
+    altWin.addButtonWithTitle(I18N.CANCEl);
+
+    comboBox.addItemsWithObjectValues(items);
+    comboBox.selectItemAtIndex(2);
+
+    exportBox.setTitle(I18N.EXPORTEVERYLAYER);
+    exportBox.setButtonType(NSSwitchButton);
+    exportBox.setState(true);
+
+    revealBox.setTitle(I18N.REVEALINFINDER);
+    revealBox.setButtonType(NSSwitchButton);
+    revealBox.setState(true);
+
+    altWin.addAccessoryView(comboBox);
+    altWin.addAccessoryView(exportBox);
+    altWin.addAccessoryView(revealBox);
+
+    return {
+      // User clicks the button to confirm the return to 1000, 1001 to cancel return
+      button: altWin.runModal(),
+      artboard: comboBox.indexOfSelectedItem(),
+      // Export image layers
+      layer: exportBox.state(),
+      // If the export is complete after Open Finder
+      reveal: revealBox.state()
+    }
+  },
+
+  // Get the path to save the zip package
+  getSavePath: function() {
+    var savePanel = NSSavePanel.savePanel();
+    var docName   = util.toJSString(doc.displayName());
+
+    savePanel.setTitle(I18N.EXPORT);
+    savePanel.setNameFieldLabel(I18N.EXPORTTO);
+    savePanel.setShowsTagField(false);
+    savePanel.setAllowedFileTypes(NSArray.arrayWithObject(@"zip"));
+    savePanel.setAllowsOtherFileTypes(false);
+    savePanel.setCanCreateDirectories(true);
+
+    if (!doc.fileURL()) {
+      docName = 'Untitled';
+    } else {
+      docName = docName.replace('.sketch', '');
+    }
+
+    // Set the default export package zip file named sketch source file name
+    savePanel.setNameFieldStringValue([NSString stringWithFormat:@"%@.zip", docName]);
+
+    if (savePanel.runModal() != NSOKButton) {
+      return false;
+    } else {
+      return savePanel.URL().path();
+    }
+  }
+}
+
+function onRun(context) {
+  ctx = context;
+  doc = context.document;
+  new ExportAsZip().setup();
+}

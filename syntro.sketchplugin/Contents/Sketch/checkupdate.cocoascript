@@ -1,0 +1,37 @@
+@import "util.cocoascript";
+
+// Upgrade Detection
+function onRun(context) {
+
+  var ctx  = context;
+  var doc  = context.document;
+  var I18N = util.I18N;
+
+  var pluginPath      = [NSString stringWithFormat: @"%@", ctx.scriptPath.replace(/\/(\w*)\.cocoascript$/, '//')];
+  var manifestContent = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@manifest.json", pluginPath]];
+  var manifest        = [NSJSONSerialization JSONObjectWithData:manifestContent options:nil error:nil];
+
+  var currentVersion = null;
+  var response       = util.getJSON('https://raw.githubusercontent.com/tudou527/marketch/master/package.json');
+  var remoteVersion  = null;
+
+  if (response && response.version) {
+
+    currentVersion = util.convertVersion(manifest.version);
+    remoteVersion  = util.convertVersion(response.version);
+
+    if (remoteVersion > currentVersion) {
+      util.showTips({
+        content: I18N.NEWVERSION.replace('{newversion}', response.version)
+      });
+    } else {
+      util.showTips({
+        content: '' + manifest.version + ' ' + I18N.LAETVERSION
+      });
+    }
+  } else {
+    util.showTips({
+      content: I18N.NETERROR
+    });
+  }
+}
